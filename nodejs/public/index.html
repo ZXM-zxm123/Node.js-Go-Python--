@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>文档转换系统</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        .container { background: #f5f5f5; padding: 2rem; border-radius: 8px; }
+        .form-group { margin-bottom: 1rem; }
+        label { display: block; margin-bottom: 0.5rem; font-weight: bold; }
+        input[type="file"] { width: 100%; padding: 0.5rem; box-sizing: border-box; }
+        select { padding: 0.5rem; width: 100%; box-sizing: border-box; }
+        button { background: #4CAF50; color: white; padding: 0.8rem 1.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+        button:disabled { background: #cccccc; cursor: not-allowed; }
+        .status { margin-top: 1.5rem; padding: 1rem; border-radius: 4px; }
+        .status.info { background: #e3f2fd; border-left: 4px solid #2196F3; }
+        .status.warning { background: #fff3e0; border-left: 4px solid #FF9800; }
+        .status.success { background: #e8f5e9; border-left: 4px solid #4CAF50; }
+        .status.error { background: #ffebee; border-left: 4px solid #f44336; }
+        .progress-bar { width: 100%; background: #e0e0e0; height: 20px; border-radius: 10px; overflow: hidden; margin-top: 1rem; }
+        .progress-fill { height: 100%; background: #4CAF50; transition: width 0.3s ease; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>文档转换系统</h1>
+        
+        <div class="form-group">
+            <label for="fileInput">选择文件</label>
+            <input type="file" id="fileInput" accept=".docx,.pdf,.md,.html,.txt">
+        </div>
+        
+        <div class="form-group">
+            <label for="targetFormat">目标格式</label>
+            <select id="targetFormat">
+                <option value="pdf">PDF</option>
+                <option value="docx">Word (DOCX)</option>
+                <option value="html">HTML</option>
+                <option value="markdown">Markdown</option>
+                <option value="txt">纯文本</option>
+            </select>
+        </div>
+        
+        <button id="uploadBtn" onclick="uploadFile()">上传并转换</button>
+        
+        <div id="status"></div>
+    </div>
+
+    <script>
+        let currentTaskId = null;
+        let pollInterval = null;
+
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const targetFormat = document.getElementById('targetFormat').value;
+            const uploadBtn = document.getElementById('uploadBtn');
+            const statusDiv = document.getElementById('status');
+
+            if (!fileInput.files[0]) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '请选择文件';
+                return;
+            }
+
+            uploadBtn.disabled = true;
+            statusDiv.className = 'status info';
+            statusDiv.innerHTML = '正在上传...';
+
+            const formData = new FormData();
+            formData.append('document', fileInput.files[0]);
+            formData.append('targetFormat', targetFormat);
+
+            try {
+                const response = await fetch('/api/upload', { method: 'POST', body: formData });
+                const data = await response.json();
+
+                if (data.isDuplicate) {
+                    statusDiv.className = 'status warning';
+                    statusDiv.innerHTML = `
+                        <strong>${data.message}</strong><br>
+                        任务 ID: ${data.taskId}<br>
+                        当前状态: ${data.status}<br>
+                        ${data.queuePosition ? `排队位置: 第 ${data.queuePosition} 位` : ''}<br>
+                        ${data.estimatedWaitTime ? `预计等待: ${data.estimatedWaitTime}` : ''}
+                    `;
+                    currentTaskId = data.taskId;
+                    startPolling();
+                    return;
+                }
+
+                statusDiv.className = 'status info';
+                statusDiv.innerHTML = `
+                    <strong>${data.message}</strong><br>
+                    任务 ID: ${data.taskId}<br>
+                    排队位置: 第 ${data.queuePosition} 位<br>
+                    预计等待: ${data.estimatedWaitTime}
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: 0%"></div>
+                    </div>
+                `;
+
+                currentTaskId = data.taskId;
+                startPolling();
+            } catch (error) {
+                statusDiv.className = 'status error';
+                statusDiv.textContent = '上传失败: ' + error.message;
+                uploadBtn.disabled = false;
+            }
+        }
+
+        async function startPolling() {
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`/api/task/${currentTaskId}`);
+                    const task = await response.json();
+                    updateStatus(task);
+                } catch (error) {
+                    console.error('轮询失败', error);
+                }
+            }, 1000);
+        }
+
+        async function updateStatus(task) {
+            const statusDiv = document.getElementById('status');
+            const uploadBtn = document.getElementById('uploadBtn');
+
+            let progressHtml = '';
+            if (task.progress !== undefined) {
+                progressHtml = `
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${task.progress}%"></div>
+                    </div>
+                    <p>进度: ${task.progress}%</p>
+                `;
+            }
+
+            if (task.status === 'queued') {
+                statusDiv.className = 'status info';
+                statusDiv.innerHTML = `
+                    <strong>任务排队中...</strong><br>
+                    任务 ID: ${task.id}<br>
+                    目标格式: ${task.targetFormat}
+                    ${progressHtml}
+                `;
+            } else if (task.status === 'processing') {
+                statusDiv.className = 'status info';
+                statusDiv.innerHTML = `
+                    <strong>正在处理...</strong><br>
+                    任务 ID: ${task.id}<br>
+                    目标格式: ${task.targetFormat}
+                    ${progressHtml}
+                `;
+            } else if (task.status === 'completed') {
+                statusDiv.className = 'status success';
+                statusDiv.innerHTML = `
+                    <strong>转换完成!</strong><br>
+                    任务 ID: ${task.id}<br>
+                    <a href="/api/download/${task.id}" download>点击下载转换结果</a>
+                `;
+                clearInterval(pollInterval);
+                uploadBtn.disabled = false;
+            } else if (task.status === 'failed') {
+                statusDiv.className = 'status error';
+                statusDiv.innerHTML = `
+                    <strong>转换失败</strong><br>
+                    任务 ID: ${task.id}<br>
+                    错误信息: ${task.error || '未知错误'}<br>
+                    重试次数: ${task.retries}/${task.maxRetries}
+                `;
+                clearInterval(pollInterval);
+                uploadBtn.disabled = false;
+            }
+        }
+    </script>
+</body>
+</html>
